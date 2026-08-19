@@ -11,8 +11,8 @@ import http from 'http';
 // ==================== CONFIGURATION ====================
 const PORT = process.env.PORT || 8080;
 const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || crypto.randomBytes(32).toString('hex');
-const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'monitorMutexCPUman';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '`f7`8b`c.519e`7ba57f6~s';
+const ADMIN_USERNAME =  'monitorMutexCPUman';
+const ADMIN_PASSWORD =  '`f7`8b`c.519e`7ba57f6~s';
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 
 // Log configuration on startup
