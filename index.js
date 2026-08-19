@@ -70,7 +70,7 @@ const cryptoManager = new CryptoManager(ENCRYPTION_KEY);
 // ==================== EXPRESS APP ====================
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+const wss = new WebSocketServer({ server });
 
 app.use(helmet({
     contentSecurityPolicy: false,
