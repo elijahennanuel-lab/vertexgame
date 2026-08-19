@@ -4,7 +4,7 @@ import cors from 'cors';
 import compression from 'compression';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
-import WebSocket from 'ws';
+import { WebSocketServer } from 'ws';
 import http from 'http';
 
 // ==================== CONFIGURATION ====================
